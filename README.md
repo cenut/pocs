@@ -1,8 +1,31 @@
-# PHP2Shell local Docker labs
+# PHP2Shell trigger scripts (online target mode)
 
-## ASLR/RCE PoC
+Two bounded request-trigger harnesses for the PHP advisory cases. They run directly from your machine against a **live/online URL** you own or are explicitly authorized to test — no Docker required anymore; the local Compose lab nodes were removed.
 
-Run the upstream 9bie PoC against its disposable PHP 8.4.26 Apache target. The target binds only to `127.0.0.1:8089`.
+## Advisory trigger scripts
+
+```sh
+python3 trigger_cve_2026_109618.py --url https://target.com/
+python3 trigger_cve_2026_109619.py --url https://target.com/ \
+  --health-path /control/health.php --marker "HEALTHY 8.5.4"
+```
+
+| Script | What it sends | What you should observe | Limit |
+| --- | --- | --- | --- |
+| `trigger_cve_2026_109618.py` | One bounded multipart POST sized to exhaust PHP's `memory_limit` during parsing (default calibrated for 16M limit / 8M post_max_size) | HTTP 500 / memory-exhaustion response, then the site answers the follow-up health check | Trigger only; no corruption or RCE claim |
+| `trigger_cve_2026_109619.py` | Fatal-error producer request followed by an early-diagnostic consumer request | Consumer connection may drop (worker abort); server recovers on the next request | Trigger only; needs the producer/consumer endpoints to exist on the target |
+
+Useful flags (both scripts): `--post-path`/`--producer-path`/`--consumer-path`/`--health-path` to match the target's real endpoints, `--value-size` to tune payload size to the target's PHP limits, `--baseline-marker`/`--marker` to refuse firing at the wrong host, `--insecure` for self-signed TLS, `--timeout`.
+
+## Safety notes
+
+- These requests are **DoS-class probes** (memory exhaustion / worker abort). Run them only against hosts you own or have written authorization to test, and do not loop them.
+- The scripts keep a body-size cap (`MAX_BODY`) and make no attempt at memory corruption, use-after-free shaping, or code execution.
+- On a generic online target the default endpoint paths (`/producer/fatal.php`, `/consumer/index.php`, `/control/health.php`) came from the removed lab layout — they will 404 unless the target actually exposes them. Set `--marker`/`--baseline-marker` so the script aborts before triggering if the host is not the intended one.
+
+## ASLR/RCE PoC lab
+
+The disposable Docker lab for the upstream 9bie ASLR/RCE PoC remains available under `aslr-lab/` (binds only to `127.0.0.1:8089`):
 
 Requirements: Docker Engine or Docker Desktop with Docker Compose v2, Git, Python 3.10 or newer, `curl`, and network access for the first image and submodule downloads. On Apple Silicon, Docker uses emulation for the `linux/amd64` target.
 
@@ -34,36 +57,6 @@ PROOF: uid=33(www-data) gid=33(www-data) groups=33(www-data)
 The proof and detected offsets remain in `aslr-lab/aslr-out/` and are ignored by Git. The screenshot shows a successful run and cleanup.
 
 ![Successful local ASLR lab run showing the heap and libphp leaks, www-data proof, and container cleanup](aslr-lab/screenshots/aslr-lab-success.png)
-
-## What the labs demonstrate
-
-| Lab | Setup | Observed result and limit |
-| --- | --- | --- |
-| CVE-2026-109618 trigger | PHP 8.4.26 `mod_php`; `memory_limit=16M`; one multipart part with 80,000 headers. | PHP reports memory exhaustion during parsing; Apache answers the follow-up health check. This does not demonstrate cleanup corruption or RCE. |
-| CVE-2026-109619 trigger | PHP 8.5.4 Apache prefork with one worker and `fatal_error_backtraces=1`; fatal-error producer followed by the `.htaccess` consumer request. | The consumer connection closes, Apache logs `zend_mm_heap corrupted`, and the worker is replaced. This does not demonstrate controlled use-after-free or RCE. |
-| ASLR/RCE PoC | PHP 8.4.26 Apache prefork `mod_php`, bound to `127.0.0.1:8089`. | The PoC leaks heap and `libphp` bases and prints the `www-data` proof in the disposable target. |
-
-## Advisory trigger labs
-
-The two advisory cases reproduce request triggers only; they do not demonstrate controlled memory corruption or RCE.
-
-To run both trigger cases and the control together:
-
-```sh
-docker compose up --build
-```
-
-The targets use internal Docker networks and publish no host ports.
-
-To run one case instead:
-
-```sh
-python3 run_poc.py oom
-python3 run_poc.py stale
-python3 run_poc.py control
-```
-
-`oom` demonstrates multipart memory-limit exhaustion followed by a healthy response. `stale` demonstrates a worker abort after the producer/consumer requests. `control` runs the sequence with `fatal_error_backtraces=0` and should keep the worker alive.
 
 ## References
 
